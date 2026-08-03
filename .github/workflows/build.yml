@@ -1,51 +1,48 @@
-name: Track Asahi releases
+name: Build cyb3r-kernel on Asahi release
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Asahi kernel release tag (e.g. asahi-7.1.5-1)'
+        description: 'Asahi kernel tag (e.g. asahi-7.1.5-1)'
         required: true
-  schedule:
-    - cron: '0 6 * * *'  # daily poll for new releases
+        default: 'asahi-7.1.5-1'
 
 jobs:
   build:
     runs-on: ubuntu-24.04-arm
     steps:
-      - name: Checkout CI repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Clone Asahi kernel at release tag
-        run: |
-          TAG="${{ inputs.tag }}"
-          echo "Building: $TAG"
-          git clone --depth=1 --branch="$TAG" https://github.com/AsahiLinux/linux.git kernel
-
-      - name: Apply cyb3r patches
-        run: |
-          cd kernel
-          for p in ../patches/*.patch; do
-            echo "→ $(basename $p)"
-            git apply "$p" || { echo "FAILED: $p"; exit 1; }
-          done
+      - uses: DeterminateSystems/nix-installer-action@v16
 
       - name: Build kernel
         run: |
-          cd kernel
-          make defconfig
-          make -j$(nproc) Image modules dtbs
+          nix build \
+            --override-input asahi-kernel "github:AsahiLinux/linux?ref=${{ inputs.tag }}" \
+            .#packages.aarch64-linux.default \
+            -o kernel-result
 
-      - name: Package
+      - name: Package artifacts
         run: |
-          cd kernel
-          mkdir -p ../release/modules
-          cp arch/arm64/boot/Image ../release/
-          find . -name "*.ko" -exec cp --parents {} ../release/modules/ \;
-          cd ../release
-          tar -czf ../kernel-${{ inputs.tag }}-arm64.tar.gz .
+          mkdir release
+          cp kernel-result/Image release/
+          cp kernel-result/System.map release/ 2>/dev/null || true
+          tar -czf "kernel-${{ inputs.tag }}-arm64.tar.gz" -C release .
 
-      - name: Upload
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          body: |
+            cyb3r-kernel build from Asahi Linux ${{ inputs.tag }}
+            
+            Patches applied:
+            - asahi-nightlight (GNOME Night Light)
+            - agx-show-fdinfo (GPU telemetry via fdinfo)
+          files: kernel-${{ inputs.tag }}-arm64.tar.gz
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ inputs.tag }}-arm64

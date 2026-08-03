@@ -1,0 +1,45 @@
+{
+  "nodes": {
+    "asahi-kernel": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1785004109,
+        "narHash": "sha256-KSy/SE55czYmBHwE77jOVDfMqiAZ3BNjXBZxh+EXYdo=",
+        "owner": "AsahiLinux",
+        "repo": "linux",
+        "rev": "a326e00f6d17ac093431a4a3aef75aa21cd95b36",
+        "type": "github"
+      },
+      "original": {
+        "owner": "AsahiLinux",
+        "ref": "asahi-7.1.5-1",
+        "repo": "linux",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1785692966,
+        "narHash": "sha256-vUfIeBEfpbAfZ5zjgIkYk7eHBeVfCYVjLbWnMkseYnk=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "643809054d65fdd466a63e3155b8c498cb483c04",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "asahi-kernel": "asahi-kernel",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
