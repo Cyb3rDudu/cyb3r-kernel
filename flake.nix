@@ -26,7 +26,6 @@
       DRM_ASAHI = module;
       DRM_APPLE = module;
       DRM_APPLE_AUDIO = yes;
-      DRM_APPLE_DCP = module;
       TYPEC_DP_ALTMODE = module;
       MUX_APPLE_DPXBAR = module;
       TYPEC_NVIDIA_ALTMODE = module;
@@ -37,8 +36,6 @@
       RUST_APPLE_MAILBOX = yes;
       RUST_APPLE_RTKIT = yes;
       RUST_DRM_SCHED = yes;
-      DRM_GEM_SHMEM_HELPER = yes;
-      DRM_GPUVM = yes;
     };
     mkKernel = pkgs: pkgs.buildLinux {
       src = asahi-kernel;
