@@ -151,7 +151,7 @@ index 061f289e4..28ac1d481 100644
 +    }
 +}
 diff --git a/drivers/gpu/drm/asahi/gpu.rs b/drivers/gpu/drm/asahi/gpu.rs
-index b6c1c64c5..7ab887ada 100644
+index b6c1c64c5..20d997d73 100644
 --- a/drivers/gpu/drm/asahi/gpu.rs
 +++ b/drivers/gpu/drm/asahi/gpu.rs
 @@ -16,6 +16,7 @@
@@ -256,7 +256,7 @@ index b6c1c64c5..7ab887ada 100644
                  initdata: KBox::<fw::types::GpuObject<fw::initdata::InitData::ver>>::into_inner(initdata),
                  uat: KBox::<mmu::Uat>::into_inner(uat),
                  io_mappings: KVec::new(),
-@@ -1613,6 +1651,44 @@ fn is_crashed(&self) -> bool {
+@@ -1613,6 +1651,47 @@ fn is_crashed(&self) -> bool {
          self.crashed.load(Ordering::Relaxed)
      }
  
@@ -274,9 +274,12 @@ index b6c1c64c5..7ab887ada 100644
 +        let raw = self.telemetry.temp_raw.load(Ordering::Relaxed);
 +        let scale = self.telemetry.temp_scale.load(Ordering::Relaxed);
 +        if scale > 0 && raw > 0 {
-+            Some(raw / scale)
++            // Firmware fixed-point: temp = raw / scale / 64.0
++            // See m1n1 AGX channels.py decoder.
++            let divisor = (scale as u64) * 64;
++            let temp_c = ((raw as u64) + divisor / 2) / divisor;
++            Some(temp_c as u32)
 +        } else {
-+            // Fallback to HwDataA
 +            self.initdata.runtime_pointers.with(|_, rp| {
 +                rp.hwdata_a.with(|hwa, _| {
 +                    let v = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(hwa.temp_c)) };
