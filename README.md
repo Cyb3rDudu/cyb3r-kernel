@@ -1,31 +1,23 @@
 # cyb3r-kernel
 
-Custom Asahi Linux kernel builds with patches for Apple Silicon MacBooks.
+Patched Asahi Linux kernel for Apple Silicon. CI tracks upstream releases and
+produces pre-built kernel images.
 
 ## Patches
 
-| File | Description |
-|---|---|
-| `asahi-nightlight.patch` | GNOME Night Light (DCP gamma LUT) |
-| `0001-agx-show-fdinfo-memory-stats.patch` | AGX GPU fdinfo telemetry (util, power, temp, freq via firmware stats) |
+| # | File | Description |
+|---|---|---|
+| 0001 | `0001-agx-fdinfo-telemetry.patch` | AGX GPU fdinfo: utilization, power, temp, freq |
+| 0100 | `0100-dcp-nightlight-gamma.patch` | GNOME Night Light via DCP gamma LUT |
 
-## CI
-
-GitHub Actions triggers on `workflow_dispatch` with a release tag. Builds using Nix (cross-compiled for aarch64 with Rust). Artifact: `kernel-<tag>-arm64.tar.gz`.
-
-## Local development (carrier/mothership)
-
-The kernel is built as part of the NixOS flake. CI here is for tracking Asahi releases only.
-
-## Usage
+## Local build (carrier — x86_64 → aarch64)
 
 ```bash
-# Trigger a build for a specific Asahi release:
-gh workflow run build.yml -f tag=asahi-7.1.5-1
+nix build .#cross.aarch64-linux.default
 ```
 
-Or use the bundled flake locally:
+## Trigger a release build
 
 ```bash
-nix build .#packages.aarch64-linux.default
+gh workflow run build.yml -f tag=asahi-7.1.5-1
 ```

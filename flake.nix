@@ -9,44 +9,49 @@
     };
   };
 
-  outputs = { self, nixpkgs, asahi-kernel }: {
+  outputs = { self, nixpkgs, asahi-kernel }: let
+    kernelPatches = [
+      { name = "agx-fdinfo";     patch = ./patches/0001-agx-fdinfo-telemetry.patch; }
+      { name = "dcp-nightlight"; patch = ./patches/0100-dcp-nightlight-gamma.patch; }
+    ];
+    kernelConfig = with nixpkgs.lib.kernel; {
+      ARM64_16K_PAGES = yes;
+      ARM64_MEMORY_MODEL_CONTROL = yes;
+      ARM64_ACTLR_STATE = yes;
+      APPLE_WATCHDOG = yes;
+      APPLE_M1_CPU_PMU = yes;
+      HID_APPLE = module;
+      APPLE_PMGR_MISC = yes;
+      APPLE_PMGR_PWRSTATE = yes;
+      DRM_ASAHI = module;
+      DRM_APPLE = module;
+      DRM_APPLE_AUDIO = yes;
+      DRM_APPLE_DCP = module;
+      TYPEC_DP_ALTMODE = module;
+      MUX_APPLE_DPXBAR = module;
+      RUST_FW_LOADER_ABSTRACTIONS = yes;
+      RUST_DRM_GEM_SHMEM_HELPER = yes;
+      RUST_DRM_GPUVM = yes;
+      RUST_APPLE_MAILBOX = yes;
+      RUST_APPLE_RTKIT = yes;
+      RUST_DRM_SCHED = yes;
+      DRM_GEM_SHMEM_HELPER = yes;
+      DRM_GPUVM = yes;
+    };
+    mkKernel = pkgs: pkgs.buildLinux {
+      src = asahi-kernel;
+      version = "7.1.5-cyb3r";
+      modDirVersion = "7.1.5";
+      inherit kernelPatches;
+      structuredExtraConfig = kernelConfig;
+      features.rust = true;
+    };
+  in {
     packages.aarch64-linux.default =
-      let
-        pkgs = nixpkgs.legacyPackages.aarch64-linux;
-      in
-      pkgs.buildLinux {
-        src = asahi-kernel;
-        version = "7.1.5-cyb3r";
-        modDirVersion = "7.1.5";
-        kernelPatches = [
-          { name = "nightlight"; patch = ./patches/asahi-nightlight.patch; }
-          { name = "agx-fdinfo";  patch = ./patches/0001-agx-show-fdinfo-memory-stats.patch; }
-        ];
-        structuredExtraConfig = with pkgs.lib.kernel; {
-          ARM64_16K_PAGES = yes;
-          ARM64_MEMORY_MODEL_CONTROL = yes;
-          ARM64_ACTLR_STATE = yes;
-          APPLE_WATCHDOG = yes;
-          APPLE_M1_CPU_PMU = yes;
-          HID_APPLE = module;
-          APPLE_PMGR_MISC = yes;
-          APPLE_PMGR_PWRSTATE = yes;
-          DRM_ASAHI = module;
-          DRM_APPLE = module;
-          DRM_APPLE_AUDIO = yes;
-          DRM_APPLE_DCP = module;
-          TYPEC_DP_ALTMODE = module;
-          MUX_APPLE_DPXBAR = module;
-          RUST_FW_LOADER_ABSTRACTIONS = yes;
-          RUST_DRM_GEM_SHMEM_HELPER = yes;
-          RUST_DRM_GPUVM = yes;
-          RUST_APPLE_MAILBOX = yes;
-          RUST_APPLE_RTKIT = yes;
-          RUST_DRM_SCHED = yes;
-          DRM_GEM_SHMEM_HELPER = yes;
-          DRM_GPUVM = yes;
-        };
-        features.rust = true;
-      };
+      mkKernel nixpkgs.legacyPackages.aarch64-linux;
+
+    # Cross-compile from x86_64 → aarch64 (for carrier)
+    packages.x86_64-linux.cross-aarch64 =
+      mkKernel nixpkgs.legacyPackages.x86_64-linux.pkgsCross.aarch64-multiplatform;
   };
 }
