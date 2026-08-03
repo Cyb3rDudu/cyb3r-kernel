@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     asahi-kernel = {
-      url = "github:AsahiLinux/linux?ref=asahi-7.1.5-1";
+      url = "github:AsahiLinux/linux/e3e35907c17a05773d481e58a566bf9108166cc5";  # fairydust
       flake = false;
     };
   };
@@ -26,7 +26,11 @@
       DRM_ASAHI = module;
       DRM_APPLE = module;
       DRM_APPLE_AUDIO = yes;
+      DRM_APPLE_DCP = module;
       TYPEC_DP_ALTMODE = module;
+      MUX_APPLE_DPXBAR = module;
+      TYPEC_NVIDIA_ALTMODE = module;
+      TYPEC_TBT_ALTMODE = module;
       RUST_FW_LOADER_ABSTRACTIONS = yes;
       RUST_DRM_GEM_SHMEM_HELPER = yes;
       RUST_DRM_GPUVM = yes;

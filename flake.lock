@@ -3,17 +3,17 @@
     "asahi-kernel": {
       "flake": false,
       "locked": {
-        "lastModified": 1785004109,
-        "narHash": "sha256-KSy/SE55czYmBHwE77jOVDfMqiAZ3BNjXBZxh+EXYdo=",
+        "lastModified": 1785179283,
+        "narHash": "sha256-hmxu1NcS3Ce8VpJahgZLs7mjh3ZBHq3sW5NVO3DqglU=",
         "owner": "AsahiLinux",
         "repo": "linux",
-        "rev": "a326e00f6d17ac093431a4a3aef75aa21cd95b36",
+        "rev": "e3e35907c17a05773d481e58a566bf9108166cc5",
         "type": "github"
       },
       "original": {
         "owner": "AsahiLinux",
-        "ref": "asahi-7.1.5-1",
         "repo": "linux",
+        "rev": "e3e35907c17a05773d481e58a566bf9108166cc5",
         "type": "github"
       }
     },
