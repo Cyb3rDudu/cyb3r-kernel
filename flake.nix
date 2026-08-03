@@ -26,9 +26,7 @@
       DRM_ASAHI = module;
       DRM_APPLE = module;
       DRM_APPLE_AUDIO = yes;
-      DRM_APPLE_DCP = module;
       TYPEC_DP_ALTMODE = module;
-      MUX_APPLE_DPXBAR = module;
       RUST_FW_LOADER_ABSTRACTIONS = yes;
       RUST_DRM_GEM_SHMEM_HELPER = yes;
       RUST_DRM_GPUVM = yes;
