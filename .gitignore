@@ -1,0 +1,4 @@
+kernel/
+result/
+release/
+*.tar.gz

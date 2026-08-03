@@ -1,0 +1,377 @@
+diff --git a/drivers/gpu/drm/asahi/channel.rs b/drivers/gpu/drm/asahi/channel.rs
+index 30cc0efbf..1cd2c099d 100644
+--- a/drivers/gpu/drm/asahi/channel.rs
++++ b/drivers/gpu/drm/asahi/channel.rs
+@@ -22,9 +22,10 @@
+ use crate::{
+     buffer,
+     event,
+-    gpu,
++    gpu::{self, GpuTelemetry},
+     mem, //
+ };
++use core::sync::atomic::Ordering;
+ use kernel::{
+     c_str,
+     prelude::*,
+@@ -589,6 +590,7 @@ pub(crate) fn poll(&mut self) {
+ pub(crate) struct StatsChannel {
+     dev: AsahiDevRef,
+     ch: RxChannel<ChannelState, RawStatsMsg::ver>,
++    telemetry: Arc<GpuTelemetry>,
+ }
+ 
+ #[versions(AGX)]
+@@ -597,10 +599,12 @@ impl StatsChannel::ver {
+     pub(crate) fn new(
+         dev: &AsahiDevice,
+         alloc: &mut gpu::KernelAllocators,
++        telemetry: Arc<GpuTelemetry>,
+     ) -> Result<StatsChannel::ver> {
+         Ok(StatsChannel::ver {
+             dev: dev.into(),
+             ch: RxChannel::<ChannelState, RawStatsMsg::ver>::new(alloc, 0x100)?,
++            telemetry,
+         })
+     }
+ 
+@@ -620,6 +624,36 @@ pub(crate) fn poll(&mut self) {
+                     // accessing the enum view is valid.
+                     let msg = unsafe { msg.msg };
+                     cls_dev_dbg!(StatsCh, self.dev, "Stats: {:?}\n", msg);
++                    match msg {
++                        StatsMsg::ver::Utilization { util1, .. } => {
++                            let bps = util1.min(100).saturating_mul(100);
++                            self.telemetry.utilization_bps.store(bps, Ordering::Relaxed);
++                        }
++                        StatsMsg::ver::AvgPower { avg_power, .. } => {
++                            self.telemetry.avg_power_mw.store(avg_power, Ordering::Relaxed);
++                        }
++                        StatsMsg::ver::PowerState { pstate, .. } => {
++                            self.telemetry.pstate.store(pstate, Ordering::Relaxed);
++                        }
++                        StatsMsg::ver::FwBusy { busy, .. } => {
++                            let is_busy = busy != 0;
++                            self.telemetry.fw_busy.store(is_busy, Ordering::Relaxed);
++                            if !is_busy {
++                                self.telemetry.utilization_bps.store(0, Ordering::Relaxed);
++                            }
++                        }
++                        StatsMsg::ver::PowerOff { .. } => {
++                            self.telemetry.fw_busy.store(false, Ordering::Relaxed);
++                            self.telemetry.utilization_bps.store(0, Ordering::Relaxed);
++                            self.telemetry.avg_power_mw.store(0, Ordering::Relaxed);
++                            self.telemetry.pstate.store(u32::MAX, Ordering::Relaxed);
++                        }
++                        StatsMsg::ver::Temperature { raw_value, scale, .. } => {
++                            self.telemetry.temp_scale.store(scale, Ordering::Relaxed);
++                            self.telemetry.temp_raw.store(raw_value, Ordering::Relaxed);
++                        }
++                        _ => {}
++                    }
+                 }
+                 _ => {
+                     // SAFETY: The raw view is always valid for all bit patterns.
+diff --git a/drivers/gpu/drm/asahi/driver.rs b/drivers/gpu/drm/asahi/driver.rs
+index bafcfc4ed..870df9da2 100644
+--- a/drivers/gpu/drm/asahi/driver.rs
++++ b/drivers/gpu/drm/asahi/driver.rs
+@@ -105,6 +105,14 @@ impl drm::driver::Driver for AsahiDriver {
+         (ASAHI_SUBMIT,          drm_asahi_submit,
+             ioctl::AUTH | ioctl::RENDER_ALLOW, crate::file::File::submit),
+     }
++
++    /// Per-client fdinfo callback: reports GEM memory stats (drm-memory-* keys).
++    const SHOW_FDINFO: Option<
++        unsafe extern "C" fn(
++            p: *mut kernel::bindings::drm_printer,
++            file: *mut kernel::bindings::drm_file,
++        ),
++    > = Some(crate::file::asahi_show_fdinfo);
+ }
+ 
+ // OF Device ID table.s
+diff --git a/drivers/gpu/drm/asahi/file.rs b/drivers/gpu/drm/asahi/file.rs
+index 061f289e4..28ac1d481 100644
+--- a/drivers/gpu/drm/asahi/file.rs
++++ b/drivers/gpu/drm/asahi/file.rs
+@@ -36,6 +36,7 @@
+ use kernel::error::code::*;
+ use kernel::new_mutex;
+ use kernel::prelude::*;
++use kernel::str::CString;
+ use kernel::sync::{
+     Arc,
+     Mutex, //
+@@ -1092,3 +1093,46 @@ fn drop(&mut self) {
+         mod_pr_debug!("[File {}]: Closing...\n", self.id);
+     }
+ }
++
++/// C callback for drm_show_fdinfo().  Reports per-client GEM memory stats
++/// and global GPU telemetry from firmware (utilization, power, temp, freq).
++#[no_mangle]
++pub unsafe extern "C" fn asahi_show_fdinfo(
++    p: *mut kernel::bindings::drm_printer,
++    raw_file: *mut kernel::bindings::drm_file,
++) {
++    // SAFETY: Called from drm_show_fdinfo() under drm_dev_enter() which
++    // guarantees both pointers are valid for the duration of the call.
++    unsafe {
++        kernel::bindings::drm_show_memory_stats(p, raw_file);
++
++        let minor = (*raw_file).minor;
++        if minor.is_null() { return; }
++        let drm_dev = (*minor).dev;
++        if drm_dev.is_null() { return; }
++        // SAFETY: drm_dev is protected by drm_dev_enter() in the caller.
++        let device: &drm::device::Device<driver::AsahiDriver> =
++            drm::device::Device::from_raw(drm_dev);
++
++        if let Some(v) = device.gpu.get_cur_utilization_bps() {
++            if let Ok(s) = CString::try_from_fmt(fmt!("asahi-utilization:\t{} bps\n", v)) {
++                kernel::bindings::drm_printf_str(p, s.as_ptr());
++            }
++        }
++        if let Some(v) = device.gpu.get_avg_power_mw() {
++            if let Ok(s) = CString::try_from_fmt(fmt!("asahi-power-avg:\t{} mW\n", v)) {
++                kernel::bindings::drm_printf_str(p, s.as_ptr());
++            }
++        }
++        if let Some(v) = device.gpu.get_freq_mhz() {
++            if let Ok(s) = CString::try_from_fmt(fmt!("asahi-frequency:\t{} MHz\n", v)) {
++                kernel::bindings::drm_printf_str(p, s.as_ptr());
++            }
++        }
++        if let Some(v) = device.gpu.get_temp_c() {
++            if let Ok(s) = CString::try_from_fmt(fmt!("asahi-temperature:\t{} C\n", v)) {
++                kernel::bindings::drm_printf_str(p, s.as_ptr());
++            }
++        }
++    }
++}
+diff --git a/drivers/gpu/drm/asahi/gpu.rs b/drivers/gpu/drm/asahi/gpu.rs
+index b6c1c64c5..7ab887ada 100644
+--- a/drivers/gpu/drm/asahi/gpu.rs
++++ b/drivers/gpu/drm/asahi/gpu.rs
+@@ -16,6 +16,7 @@
+ use core::slice;
+ use core::sync::atomic::{
+     AtomicBool,
++    AtomicU32,
+     AtomicU64,
+     Ordering, //
+ };
+@@ -34,11 +35,11 @@
+     prelude::*,
+     soc::apple::rtkit,
+     sync::{
++        Arc,
+         lock::{
+             mutex::MutexBackend,
+             Guard, //
+         },
+-        Arc,
+         Mutex,
+         UniqueArc, //
+     },
+@@ -231,6 +232,30 @@ pub(crate) struct SequenceIDs {
+     pub(crate) queue: ID,
+ }
+ 
++/// Shared GPU telemetry updated from firmware stats channel.
++/// All fields use Relaxed ordering — independent monitoring values.
++pub(crate) struct GpuTelemetry {
++    pub(crate) utilization_bps: AtomicU32,  // util1 × 100, 0–10000
++    pub(crate) avg_power_mw: AtomicU32,     // from StatsMsg::AvgPower
++    pub(crate) pstate: AtomicU32,           // from StatsMsg::PowerState, u32::MAX = unknown
++    pub(crate) fw_busy: AtomicBool,         // from StatsMsg::FwBusy
++    pub(crate) temp_scale: AtomicU32,       // stored before temp_raw
++    pub(crate) temp_raw: AtomicU32,         // from StatsMsg::Temperature
++}
++
++impl GpuTelemetry {
++    fn new() -> Self {
++        Self {
++            utilization_bps: AtomicU32::new(0),
++            avg_power_mw: AtomicU32::new(0),
++            pstate: AtomicU32::new(u32::MAX),
++            fw_busy: AtomicBool::new(false),
++            temp_scale: AtomicU32::new(0),
++            temp_raw: AtomicU32::new(0),
++        }
++    }
++}
++
+ /// Top-level GPU manager that owns all the global state relevant to the driver instance.
+ #[versions(AGX)]
+ #[pin_data]
+@@ -238,6 +263,7 @@ pub(crate) struct GpuManager {
+     dev: AsahiDevRef,
+     cfg: &'static hw::HwConfig,
+     dyncfg: hw::DynConfig,
++    pub(crate) telemetry: Arc<GpuTelemetry>,
+     pub(crate) initdata: fw::types::GpuObject<fw::initdata::InitData::ver>,
+     uat: mmu::Uat,
+     crashed: AtomicBool,
+@@ -324,6 +350,15 @@ fn handle_channel_error(
+     fn free_context(&self, data: KBox<fw::types::GpuObject<fw::workqueue::GpuContextData>>);
+     /// Check whether the GPU is crashed
+     fn is_crashed(&self) -> bool;
++    /// Get the current GPU utilization as reported by firmware DVFS controller.
++    /// Returns basis points (0–10000 = 0%–100%), or None if unavailable.
++    fn get_cur_utilization_bps(&self) -> Option<u32>;
++    /// Get GPU average power from firmware stats (milliwatts).
++    fn get_avg_power_mw(&self) -> Option<u32>;
++    /// Get GPU temperature from firmware stats (°C).
++    fn get_temp_c(&self) -> Option<u32>;
++    /// Get GPU frequency from OPP table via firmware p-state (MHz).
++    fn get_freq_mhz(&self) -> Option<u32>;
+     /// Map a BO as a timestamp buffer
+     fn map_timestamp_buffer(
+         &self,
+@@ -728,6 +763,8 @@ fn make_mgr(
+         let buffer_mgr = buffer::BufferManager::ver::new()?;
+         let event_manager_clone = event_manager.clone();
+         let buffer_mgr_clone = buffer_mgr.clone();
++        let telemetry = Arc::new(GpuTelemetry::new(), GFP_KERNEL)?;
++        let telem_for_stats = telemetry.clone();
+         let alloc_ref = &mut alloc;
+         let rx_channels = KBox::init(
+             try_init!(RxChannels::ver {
+@@ -739,7 +776,7 @@ fn make_mgr(
+                 )?,
+                 fw_log: channel::FwLogChannel::new(dev, alloc_ref)?,
+                 ktrace: channel::KTraceChannel::new(dev, alloc_ref)?,
+-                stats: channel::StatsChannel::ver::new(dev, alloc_ref)?,
++                stats: channel::StatsChannel::ver::new(dev, alloc_ref, telem_for_stats)?,
+             }),
+             GFP_KERNEL,
+         )?;
+@@ -757,6 +794,7 @@ fn make_mgr(
+                 dev: dev.into(),
+                 cfg,
+                 dyncfg: KBox::<hw::DynConfig>::into_inner(dyncfg),
++                telemetry,
+                 initdata: KBox::<fw::types::GpuObject<fw::initdata::InitData::ver>>::into_inner(initdata),
+                 uat: KBox::<mmu::Uat>::into_inner(uat),
+                 io_mappings: KVec::new(),
+@@ -1613,6 +1651,44 @@ fn is_crashed(&self) -> bool {
+         self.crashed.load(Ordering::Relaxed)
+     }
+ 
++    fn get_cur_utilization_bps(&self) -> Option<u32> {
++        // Idle reset is handled by FwBusy=0 and PowerOff in the stats channel.
++        Some(self.telemetry.utilization_bps.load(Ordering::Relaxed))
++    }
++
++    fn get_avg_power_mw(&self) -> Option<u32> {
++        let mw = self.telemetry.avg_power_mw.load(Ordering::Relaxed);
++        if mw == 0 { None } else { Some(mw) }
++    }
++
++    fn get_temp_c(&self) -> Option<u32> {
++        let raw = self.telemetry.temp_raw.load(Ordering::Relaxed);
++        let scale = self.telemetry.temp_scale.load(Ordering::Relaxed);
++        if scale > 0 && raw > 0 {
++            Some(raw / scale)
++        } else {
++            // Fallback to HwDataA
++            self.initdata.runtime_pointers.with(|_, rp| {
++                rp.hwdata_a.with(|hwa, _| {
++                    let v = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(hwa.temp_c)) };
++                    Some(v)
++                })
++            })
++        }
++    }
++
++    fn get_freq_mhz(&self) -> Option<u32> {
++        let pstate = self.telemetry.pstate.load(Ordering::Relaxed) as usize;
++        let states = &self.dyncfg.pwr.perf_states;
++        if pstate < states.len() {
++            let hz = states[pstate].freq_hz;
++            if hz > 0 {
++                return Some(hz / 1_000_000);
++            }
++        }
++        None
++    }
++
+     fn map_timestamp_buffer(
+         &self,
+         mut bo: gem::ObjectRef,
+diff --git a/rust/helpers/drm.c b/rust/helpers/drm.c
+index 65f3f22b0..231dfa418 100644
+--- a/rust/helpers/drm.c
++++ b/rust/helpers/drm.c
+@@ -1,6 +1,8 @@
+ // SPDX-License-Identifier: GPL-2.0
+ 
++#include <drm/drm_file.h>
+ #include <drm/drm_gem.h>
++#include <drm/drm_print.h>
+ #include <drm/drm_gem_shmem_helper.h>
+ #include <drm/drm_vma_manager.h>
+ 
+@@ -75,4 +77,17 @@ rust_helper_drm_gem_shmem_object_mmap(struct drm_gem_object *obj, struct vm_area
+ }
+ 
+ #endif /* CONFIG_DRM_GEM_SHMEM_HELPER */
++
++__rust_helper void
++rust_helper_drm_show_memory_stats(struct drm_printer *p, struct drm_file *file)
++{
++	drm_show_memory_stats(p, file);
++}
++
++__rust_helper void
++rust_helper_drm_printf_str(struct drm_printer *p, const char *s)
++{
++	drm_printf(p, "%s", s);
++}
++
+ #endif /* CONFIG_DRM */
+diff --git a/rust/kernel/drm/device.rs b/rust/kernel/drm/device.rs
+index fb6baa0a6..aedb604af 100644
+--- a/rust/kernel/drm/device.rs
++++ b/rust/kernel/drm/device.rs
+@@ -96,7 +96,7 @@ impl<T: drm::Driver> Device<T> {
+         gem_prime_import_sg_table: T::Object::ALLOC_OPS.gem_prime_import_sg_table,
+         dumb_create: T::Object::ALLOC_OPS.dumb_create,
+         dumb_map_offset: T::Object::ALLOC_OPS.dumb_map_offset,
+-        show_fdinfo: None,
++        show_fdinfo: T::SHOW_FDINFO,
+         fbdev_probe: None,
+ 
+         major: T::INFO.major,
+diff --git a/rust/kernel/drm/driver.rs b/rust/kernel/drm/driver.rs
+index 18a8a90cf..e3a507d49 100644
+--- a/rust/kernel/drm/driver.rs
++++ b/rust/kernel/drm/driver.rs
+@@ -127,6 +127,13 @@ pub trait Driver {
+ 
+     /// IOCTL list. See `kernel::drm::ioctl::declare_drm_ioctls!{}`.
+     const IOCTLS: &'static [drm::ioctl::DrmIoctlDescriptor];
++
++    /// Optional show_fdinfo callback.  Set to `Some(extern_c_fn)` to provide
++    /// per-client GPU usage statistics (drm-memory-*, drm-engine-* keys) in
++    /// `/proc/self/fdinfo/<fd>`.  Default: `None`.
++    const SHOW_FDINFO: Option<
++        unsafe extern "C" fn(p: *mut bindings::drm_printer, file: *mut bindings::drm_file),
++    > = None;
+ }
+ 
+ /// The registration type of a `drm::Device`.
+diff --git a/rust/kernel/drm/gem/mod.rs b/rust/kernel/drm/gem/mod.rs
+index f766e90d2..c8caf8ff4 100644
+--- a/rust/kernel/drm/gem/mod.rs
++++ b/rust/kernel/drm/gem/mod.rs
+@@ -487,6 +487,7 @@ pub(super) const fn create_fops() -> bindings::file_operations {
+     fops.llseek = Some(bindings::noop_llseek);
+     fops.mmap = Some(bindings::drm_gem_mmap);
+     fops.fop_flags = bindings::FOP_UNSIGNED_OFFSET;
++    fops.show_fdinfo = Some(bindings::drm_show_fdinfo);
+ 
+     fops
+ }

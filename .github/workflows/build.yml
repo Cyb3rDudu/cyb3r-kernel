@@ -1,0 +1,52 @@
+name: Track Asahi releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Asahi kernel release tag (e.g. asahi-7.1.5-1)'
+        required: true
+  schedule:
+    - cron: '0 6 * * *'  # daily poll for new releases
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout CI repo
+        uses: actions/checkout@v4
+
+      - name: Clone Asahi kernel at release tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          echo "Building: $TAG"
+          git clone --depth=1 --branch="$TAG" https://github.com/AsahiLinux/linux.git kernel
+
+      - name: Apply cyb3r patches
+        run: |
+          cd kernel
+          for p in ../patches/*.patch; do
+            echo "→ $(basename $p)"
+            git apply "$p" || { echo "FAILED: $p"; exit 1; }
+          done
+
+      - name: Build kernel
+        run: |
+          cd kernel
+          make defconfig
+          make -j$(nproc) Image modules dtbs
+
+      - name: Package
+        run: |
+          cd kernel
+          mkdir -p ../release/modules
+          cp arch/arm64/boot/Image ../release/
+          find . -name "*.ko" -exec cp --parents {} ../release/modules/ \;
+          cd ../release
+          tar -czf ../kernel-${{ inputs.tag }}-arm64.tar.gz .
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ inputs.tag }}-arm64
+          path: kernel-${{ inputs.tag }}-arm64.tar.gz
